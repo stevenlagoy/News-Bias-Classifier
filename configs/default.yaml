@@ -1,0 +1,35 @@
+# Default experiment configuration.
+
+seed: 42
+
+data:
+  raw_dir: data/raw
+  interim_dir: data/interim
+  processed_dir: data/processed
+  # Baly et al. Article-Bias-Prediction as the primary source; Qbias held out for OOD eval.
+  primary_dataset: article-bias-prediction
+  ood_dataset: qbias
+  # Split must be publisher-disjoint: no outlet appears in more than one split.
+  split_unit: publisher
+  train_frac: 0.7
+  val_frac: 0.15
+  test_frac: 0.15
+
+labels:
+  # Left/center/right, per AllSides labeling used by the source datasets.
+  classes: [left, center, right]
+
+model:
+  name: baseline
+  # Swap in a config block per model as approaches are added, e.g.:
+  # name: tfidf_logreg
+  # name: transformer
+
+training:
+  batch_size: 32
+  epochs: 10
+  learning_rate: 2.0e-5
+
+output:
+  checkpoint_dir: outputs/checkpoints
+  log_dir: outputs/logs

@@ -1,0 +1,21 @@
+# Core dependencies. Install with: pip install -r requirements.txt
+
+numpy
+pandas
+scikit-learn
+PyYAML
+tqdm
+
+# --- Classical ML text pipeline (TF-IDF / linear-model) ---
+# nltk
+# spacy
+
+# --- Deep learning / transformers ---
+# torch
+# transformers
+# datasets
+
+# --- Dev / testing ---
+pytest
+black
+ruff

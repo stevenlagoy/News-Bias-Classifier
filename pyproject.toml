@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "partisan-classifier"
+version = "0.1.0"
+description = "Article-level political partisanship classification (CS57600 term project)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "LaGoy" },
+    { name = "Sayed" },
+]
+dependencies = [
+    # Core, near-certain regardless of modeling approach.
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "PyYAML",
+    "tqdm",
+    # Uncomment / add once the modeling approach (classical vs. transformer) is settled:
+    # "torch",
+    # "transformers",
+    # "datasets",
+    # "nltk",
+    # "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
