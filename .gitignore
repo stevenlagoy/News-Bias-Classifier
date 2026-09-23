@@ -219,6 +219,7 @@ __marimo__/
 
 # Other
 data/
+!src/partisan_classifier/data/
 outputs/
 .env
 __pycache__/
