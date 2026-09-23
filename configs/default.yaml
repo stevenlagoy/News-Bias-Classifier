@@ -11,6 +11,7 @@ data:
   ood_dataset: qbias
   # Split must be publisher-disjoint: no outlet appears in more than one split.
   split_unit: publisher
+split:
   train_frac: 0.7
   val_frac: 0.15
   test_frac: 0.15
@@ -20,10 +21,9 @@ labels:
   classes: [left, center, right]
 
 model:
-  name: baseline
-  # Swap in a config block per model as approaches are added, e.g.:
-  # name: tfidf_logreg
-  # name: transformer
+  type: tfidf_logreg   # one of: majority, tfidf_logreg, transformer
+  name: roberta-base   # only used when type: transformer
+  epochs: 3
 
 training:
   batch_size: 32

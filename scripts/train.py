@@ -11,10 +11,14 @@ import argparse
 from partisan_classifier.config import Config
 from partisan_classifier.training.train import train
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/default.yaml")
     args = parser.parse_args()
 
     cfg = Config.load(args.config)
     train(cfg)
+
+
+if __name__ == "__main__":
+    main()
