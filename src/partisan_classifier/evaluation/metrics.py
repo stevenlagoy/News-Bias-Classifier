@@ -10,11 +10,22 @@ from __future__ import annotations
 
 from typing import Any
 
-def compute_metrics(y_true: Any, y_pred: Any) -> dict[str, Any]:
-    """
-    Return a dict of accuracy, macro-F1, and per-class precision/recall.
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+)
 
-    TODO: implement with sklearn.metrics (accuracy_score, f1_score,
-    classification_report, confusion_matrix).
-    """
-    raise NotImplementedError
+
+def compute_metrics(y_true: Any, y_pred: Any) -> dict[str, Any]:
+    """Return a dict of accuracy, macro-F1, and per-class precision/recall."""
+    labels = ["left", "center", "right"]
+    return {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "macro_f1": f1_score(y_true, y_pred, labels=labels, average="macro"),
+        "per_class_report": classification_report(
+            y_true, y_pred, labels=labels, output_dict=True
+        ),
+        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).tolist(),
+    }
