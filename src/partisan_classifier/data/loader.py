@@ -51,17 +51,16 @@ def load_qbias(raw_dir: str | Path) -> pd.DataFrame:
     """Load Qbias into REQUIRED_COLUMNS schema for OOD evaluation."""
     path = Path(raw_dir) / "qbias" / "allsides_balanced_news_headlines-texts.csv"
     raw = pd.read_csv(path)
-    print("Qbias columns: ", list(raw.columns)) # confirm names
     df = pd.DataFrame({
         "text": raw.get("text", raw.get("heading", "")),
         "publisher": raw.get("source", raw.get("news_source", "")),
         "label": raw.get("bias_rating", raw.get("bias", "")).str.lower(),
+        "tags": raw.get("tags", ""),  # kept for topic-stratified analysis, not part of the core schema
     })
     df = df.dropna(subset=["text", "label"])
     df = df[df["text"].str.strip() != ""]
     validate_schema(df)
     return df
-
 
 def load_ood_secondary(raw_dir: str | Path) -> pd.DataFrame:
     """Load second OOD test set (Kaggle) into REQUIRED_COLUMNS schema."""

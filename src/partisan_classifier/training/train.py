@@ -37,7 +37,6 @@ def train(cfg: Config) -> None:
     df = load_article_bias_prediction(cfg.get("data.raw_dir"))
     print(df["label"].value_counts())
     print(df["text"].str.len().describe())
-    print(df.iloc[0]["text"][:300])
 
     train_df, val_df, _ = publisher_disjoint_split(
         df,
