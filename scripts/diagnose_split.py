@@ -12,7 +12,7 @@ import argparse
 from sklearn.model_selection import train_test_split
 
 from partisan_classifier.config import Config
-from partisan_classifier.data.loader import load_article_bias_prediction
+from partisan_classifier.data.loader import load_article_bias_prediction, load_media_split
 from partisan_classifier.data.splits import publisher_disjoint_split
 from partisan_classifier.evaluation.metrics import compute_metrics
 from partisan_classifier.features.text_features import TfidfFeaturizer
@@ -27,6 +27,15 @@ def describe_splits(train_df, val_df, test_df) -> None:
         logger.info("%s publishers per label:\n%s", name,
                     split_df.groupby("label")["publisher"].nunique())
         logger.info("%s label counts: %s", name,
+                    split_df["label"].value_counts().to_dict())
+
+
+def describe_official_media_split(cfg) -> None:
+    train_df, val_df, test_df = load_media_split(cfg.get("data.raw_dir"))
+    for name, split_df in [("train", train_df), ("val", val_df), ("test", test_df)]:
+        logger.info("official media split — %s publishers per label:\n%s", name,
+                    split_df.groupby("label")["publisher"].nunique())
+        logger.info("official media split — %s label counts: %s", name,
                     split_df["label"].value_counts().to_dict())
 
 
@@ -50,6 +59,7 @@ def main() -> None:
     train_df, val_df, test_df = publisher_disjoint_split(df, seed=cfg.get("seed", 42))
 
     describe_splits(train_df, val_df, test_df)
+    describe_official_media_split(cfg)
     logger.info("Random-split control metrics: %s", random_split_control(df))
 
 

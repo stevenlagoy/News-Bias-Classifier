@@ -8,7 +8,7 @@ Usage:
 from __future__ import annotations
 
 from partisan_classifier.config import Config
-from partisan_classifier.data.loader import load_article_bias_prediction
+from partisan_classifier.data.loader import load_article_bias_prediction, load_media_split
 from partisan_classifier.data.splits import publisher_disjoint_split
 from partisan_classifier.evaluation.metrics import compute_metrics
 from partisan_classifier.models.baseline import MajorityClassBaseline, TfidfLogisticBaseline
@@ -45,13 +45,14 @@ def train(cfg: Config) -> None:
     print(df["label"].value_counts())
     print(df["text"].str.len().describe())
 
-    train_df, val_df, _ = publisher_disjoint_split(
-        df,
-        train_frac=cfg.get("split.train_frac", 0.7),
-        val_frac=cfg.get("split.val_frac", 0.15),
-        test_frac=cfg.get("split.test_frac", 0.15),
-        seed=cfg.get("seed", 42),
-    )
+    train_df, val_df, test_df = load_media_split(cfg.get("data.raw_dir"))
+    # train_df, val_df, _ = publisher_disjoint_split(
+    #     df,
+    #     train_frac=cfg.get("split.train_frac", 0.7),
+    #     val_frac=cfg.get("split.val_frac", 0.15),
+    #     test_frac=cfg.get("split.test_frac", 0.15),
+    #     seed=cfg.get("seed", 42),
+    # )
 
     model_type = cfg.get("model.type", "tfidf_logreg")
     model = _MODEL_REGISTRY[model_type](cfg)

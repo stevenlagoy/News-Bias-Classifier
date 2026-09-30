@@ -82,3 +82,18 @@ def validate_schema(df: pd.DataFrame) -> None:
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         raise ValueError(f"Dataset is missing required columns: {missing}")
+
+
+def load_media_split(raw_dir: str | Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Load Baly et al.'s media-based train/valid/test split. Results using this split are comparable to the reported baselines."""
+    base = Path(raw_dir) / "article-bias-prediction" / "data" / "splits" / "media"
+    df = load_article_bias_prediction(raw_dir)
+
+    def _load_ids(name: str) -> pd.DataFrame:
+        ids = pd.read_csv(base / f"{name}.tsv", sep="\t", header=None, names=["article_id"])
+        return df.merge(ids, left_on="article_id", right_on="article_id")
+
+    train_df = _load_ids("train")
+    val_df = _load_ids("valid")
+    test_df = _load_ids("test")
+    return train_df, val_df, test_df

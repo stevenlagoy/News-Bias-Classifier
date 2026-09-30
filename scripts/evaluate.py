@@ -16,6 +16,7 @@ from partisan_classifier.data.loader import (
     load_article_bias_prediction,
     load_ood_secondary,
     load_qbias,
+    load_media_split
 )
 from partisan_classifier.data.splits import publisher_disjoint_split
 from partisan_classifier.evaluation.metrics import compute_metrics
@@ -96,8 +97,9 @@ def main() -> None:
     args = parser.parse_args()
     cfg = Config.load(args.config)
 
-    df = load_article_bias_prediction(cfg.get("data.raw_dir"))
-    train_df, _, test_df = publisher_disjoint_split(df, seed=cfg.get("seed", 42))
+    train_df, val_df, test_df = load_media_split(cfg.get("data.raw_dir"))
+    # df = load_article_bias_prediction(cfg.get("data.raw_dir"))
+    # train_df, _, test_df = publisher_disjoint_split(df, seed=cfg.get("seed", 42))
 
     eval_sets = {
         "in_distribution_test": test_df,
