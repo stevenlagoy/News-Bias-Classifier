@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import torch
-from transformers import pipeline
 import pandas as pd
 
 from partisan_classifier.models.base import PartisanClassifier
@@ -18,6 +16,9 @@ _LABEL_MAP = {"LEFT": "left", "CENTER": "center", "RIGHT": "right"}
 
 class PoliticalBiasBertBaseline(PartisanClassifier):
     def __init__(self, max_chars: int = 2000, batch_size: int = 32) -> None:
+        import torch
+        from transformers import pipeline
+        
         device = 0 if torch.cuda.is_available() else -1
         self.pipe = pipeline(
             "text-classification",

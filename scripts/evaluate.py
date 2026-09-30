@@ -21,15 +21,20 @@ from partisan_classifier.data.splits import publisher_disjoint_split
 from partisan_classifier.evaluation.metrics import compute_metrics
 from partisan_classifier.models.baseline import MajorityClassBaseline, TfidfLogisticBaseline
 from partisan_classifier.models.pretrained_baseline import PoliticalBiasBertBaseline
-from partisan_classifier.models.transformer_model import TransformerClassifier
 from partisan_classifier.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+
+def _load_transformer(path: str):
+    from partisan_classifier.models.transformer_model import TransformerClassifier
+
+    return TransformerClassifier.load(path)
+
 _LOADERS = {
     "majority": MajorityClassBaseline.load,
     "tfidf_logreg": TfidfLogisticBaseline.load,
-    "transformer": TransformerClassifier.load,
+    "transformer": _load_transformer,
 }
 
 

@@ -34,13 +34,9 @@ def random_split_control(df) -> dict:
     train_df, val_df = train_test_split(
         df, test_size=0.2, random_state=42, stratify=df["label"]
     )
-    featurizer = TfidfFeaturizer()
-    X_train = featurizer.fit_transform(train_df["text"].tolist())
-    X_val = featurizer.transform(val_df["text"].tolist())
-
     model = TfidfLogisticBaseline()
-    model.fit(X_train, train_df["label"].tolist())
-    preds = model.predict(X_val)
+    model.fit(train_df["text"].to_list(), train_df["label"].tolist())
+    preds = model.predict(val_df["text"].tolist())
     return compute_metrics(val_df["label"].tolist(), preds)
 
 

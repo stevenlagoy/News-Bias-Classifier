@@ -12,18 +12,25 @@ from partisan_classifier.data.loader import load_article_bias_prediction
 from partisan_classifier.data.splits import publisher_disjoint_split
 from partisan_classifier.evaluation.metrics import compute_metrics
 from partisan_classifier.models.baseline import MajorityClassBaseline, TfidfLogisticBaseline
-from partisan_classifier.models.transformer_model import TransformerClassifier
 from partisan_classifier.utils.logging import get_logger, set_seed
 
 logger = get_logger(__name__)
 
+
+def _build_transformer(cfg: Config):
+    # Import here so tfidf_logreg/majority runs don't require torch/transformers/datasets to be installed
+    from partisan_classifier.models.transformer_model import TransformerClassifier
+
+    return TransformerClassifier(
+        model_name=cfg.get("model.name", "roberta-base"),
+        epochs=cfg.get("model.epochs", 3),
+    )
+
+
 _MODEL_REGISTRY = {
     "majority": lambda cfg: MajorityClassBaseline(),
     "tfidf_logreg": lambda cfg: TfidfLogisticBaseline(),
-    "transformer": lambda cfg: TransformerClassifier(
-        model_name=cfg.get("model.name", "roberta-base"),
-        epochs=cfg.get("model.epochs", 3),
-    ),
+    "transformer": _build_transformer,
 }
 
 

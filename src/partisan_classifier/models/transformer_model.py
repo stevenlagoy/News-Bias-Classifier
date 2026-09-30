@@ -6,14 +6,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from datasets import Dataset
-from transformers import (
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-    Trainer,
-    TrainingArguments,
-)
-
 from partisan_classifier.models.base import PartisanClassifier
 
 _LABEL2ID = {"left": 0, "center": 1, "right": 2}
@@ -28,6 +20,8 @@ class TransformerClassifier(PartisanClassifier):
         epochs: int = 3,
         batch_size: int = 8,
     ) -> None:
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        
         self.model_name = model_name
         self.output_dir = output_dir
         self.epochs = epochs
@@ -37,7 +31,9 @@ class TransformerClassifier(PartisanClassifier):
             model_name, num_labels=3, id2label=_ID2LABEL, label2id=_LABEL2ID
         )
 
-    def _prep(self, texts: list[str], labels: list[str] | None = None) -> Dataset:
+    def _prep(self, texts: list[str], labels: list[str] | None = None):
+        from datasets import Dataset
+
         data = {"text": texts}
         if labels is not None:
             data["labels"] = [_LABEL2ID[l] for l in labels]
@@ -48,6 +44,8 @@ class TransformerClassifier(PartisanClassifier):
         )
 
     def fit(self, X: list[str], y: list[str]) -> "TransformerClassifier":
+        from transformers import Trainer, TrainingArguments
+
         train_ds = self._prep(X, y)
         args = TrainingArguments(
             output_dir=self.output_dir,
@@ -85,6 +83,8 @@ class TransformerClassifier(PartisanClassifier):
 
     @classmethod
     def load(cls, path: str) -> "TransformerClassifier":
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
         obj = cls.__new__(cls)
         obj.model = AutoModelForSequenceClassification.from_pretrained(path)
         obj.tokenizer = AutoTokenizer.from_pretrained(path)
