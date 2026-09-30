@@ -28,6 +28,7 @@ def publisher_disjoint_split(
     assert abs(train_frac + val_frac + test_frac - 1.0) < 1e-6, (
         "Split fractions must sum to 1.0"
     )
+    assert df.size > 0, "dataframe must not be empty"
 
     # One dominant label per publisher (mode of articles' labels)
     pub_label = df.groupby("publisher")["label"].agg(lambda s: s.mode()[0])
