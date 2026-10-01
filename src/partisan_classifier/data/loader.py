@@ -90,8 +90,8 @@ def load_media_split(raw_dir: str | Path) -> tuple[pd.DataFrame, pd.DataFrame, p
     df = load_article_bias_prediction(raw_dir)
 
     def _load_ids(name: str) -> pd.DataFrame:
-        ids = pd.read_csv(base / f"{name}.tsv", sep="\t", header=None, names=["article_id"])
-        return df.merge(ids, left_on="article_id", right_on="article_id")
+        ids = pd.read_csv(base / f"{name}.tsv", sep="\t")
+        return df.merge(ids[["ID"]], left_on="article_id", right_on="ID")
 
     train_df = _load_ids("train")
     val_df = _load_ids("valid")

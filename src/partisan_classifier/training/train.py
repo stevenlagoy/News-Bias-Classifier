@@ -46,6 +46,7 @@ def train(cfg: Config) -> None:
     print(df["text"].str.len().describe())
 
     train_df, val_df, test_df = load_media_split(cfg.get("data.raw_dir"))
+
     # train_df, val_df, _ = publisher_disjoint_split(
     #     df,
     #     train_frac=cfg.get("split.train_frac", 0.7),
@@ -69,7 +70,6 @@ def train(cfg: Config) -> None:
     #     preds = model.predict(val_df["text"].tolist())
     model.fit(train_df["text"].tolist(), train_df["label"].tolist())
     preds = model.predict(val_df["text"].tolist())
-
 
     logger.info("Evaluating model...")
     metrics = compute_metrics(val_df["label"].tolist(), preds)
