@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Other
+data/
+!src/partisan_classifier/data/
+outputs/
+.env
+__pycache__/
+*.egg-info/
