@@ -1,12 +1,10 @@
-# Core dependencies. Install with: pip install -r requirements.txt
-
 numpy
 pandas
 scikit-learn
 PyYAML
 tqdm
-
-# --- Dev / testing ---
 pytest
 black
 ruff
+spacy
+fastcoref
