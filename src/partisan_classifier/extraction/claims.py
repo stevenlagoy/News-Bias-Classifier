@@ -3,6 +3,9 @@ from dataclasses import dataclass, field
 import spacy
 from collections import Counter
 import argparse
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 _nlp = spacy.load("en_core_web_sm") # en_core_web_trf is slower but probably more accurate
 _classifier = None
@@ -19,7 +22,7 @@ SPEECH = {
 # Speech verbs whose direct object can itself be the reported preposition (reflexive direct objectives)
 REPORTING = {
     "find", "show", "report", "indicate", "suggest", "note", "estimate", "confirm",
-    "conclude", "state", "announce", "predict", "reveal"
+    "conclude", "state", "announce", "predict", "reveal",
 }
 # Role nouns which precede a person's name
 TITLES = {
@@ -38,6 +41,29 @@ _EDGE_PUNCT = {",", ";", ":", "-", "–", "—"}
 _STRIP = " \t\n,;:-–—\"“”"
 
 
+""" Reference for parts of speech symbols:
+VERB = Verb
+PROPN = Proper Name
+PERSON = Personal Name
+DATE = Date Noun
+TIME = Time Noun
+ROOT
+
+nsubj
+nsubjpass
+ccomp
+parataxis
+cc
+appos = Appositive
+relcl
+acl
+compound
+conj
+dobj
+obj
+
+"""
+
 @dataclass
 class Claim:
     text: str
@@ -49,12 +75,14 @@ class Claim:
     source_start: int = -1
     source_end: int = -1
     text_resolved: str | None = None    # text with pronouns replaced by names (coref)
+    source_role: str | None = None      # how the article describes the source 
 
 @dataclass
 class _Src:
     text: str
     start: int
     end: int
+    role: str | None = None # descriptor words around a person's name
 
 @dataclass
 class _Cand:
@@ -136,7 +164,35 @@ def _phrase(tok) -> _Src:
             runs.append([t])
     run = next((r for r in runs if any(t.i == tok.i for t in r)), [tok])
     kept = _trim_tokens(run, strip_cc=True) or [tok]
-    return _Src(_text(kept), kept[0].idx, _token_end(kept[-1]))
+    txt = _text(kept)
+    return _Src(txt, kept[0].idx, _token_end(kept[-1]), txt)
+
+
+def _role_text(subj, exclude: set[int]) -> str | None:
+    """Words describing a named person: titles and appositives."""
+    skip: set[int] = set()
+    for t in subj.subtree:
+        if t is not subj and t.dep_ in {"relcl", "acl"}:
+            skip |= {x.i for x in t.subtree}
+    tokens = []
+    for t in subj.subtree:
+        if t.is_quote or t.text == ":": break # Stop where reported speech begins
+        if t.i not in skip and t.i not in exclude:
+            tokens.append(t)
+    tokens = _trim_tokens(tokens, strip_cc=True)
+    if all(t.pos_ == "DET" for t in tokens): return None
+    return _text(tokens) or None
+
+
+def _propn_run(token) -> list:
+    """The adjacent run of proper-noun tokens around token."""
+    doc = token.doc
+    low = high = token.i
+    while low > 0 and doc[low - 1].pos_ == "PROPN":
+        low -= 1
+    while high + 1 < len(doc) and doc[high + 1].pos_ == "PROPN":
+        high += 1
+    return list(doc[low : high + 1])
 
 
 def _name_span(subj) -> _Src:
@@ -152,16 +208,21 @@ def _name_span(subj) -> _Src:
         if t.ent_type_ == "PERSON":
             e = _ent_at(doc, t.i)
             if e is not None:
-                return _Src(e.text, e.start_char, e.end_char)
+                return _Src(e.text, e.start_char, e.end_char, _role_text(subj, set(range(e.start, e.end))))
     if subj.lemma_ in TITLES:
         for c in subj.children:
             if c.dep_ == "compound" and c.ent_type_ == "PERSON":
                 e = _ent_at(doc, c.i)
                 if e is not None:
-                    return _Src(e.text, e.start_char, e.end_char)
+                    return _Src(e.text, e.start_char, e.end_char, _role_text(subj, set(range(e.start, e.end))))
     for c in subj.children:
         if c.dep_ == "appos" and c.pos_ == "PROPN":
             return _phrase(c)
+    if subj.pos_ == "PROPN" and not any(c.dep_ in {"conj", "cc"} for c in subj.children):
+        # name was NER mislabeled as ORG
+        run = _propn_run(subj)
+        txt = _text(run)
+        return _Src(txt, run[0].idx, _token_end(run[-1]), _role_text(subj, {t.i for t in run}))
     return _phrase(subj)
 
 
@@ -344,7 +405,7 @@ def _trim_chars(text: str, a: int, b: int):
             b += 1
         elif a > 0 and text[a - 1] == '"':
             a -= 1
-    if seg.count("“") > seg.count("”"):
+    elif seg.count("“") > seg.count("”"):
         j = b
         while j < len(text) and j - b < 4 and text[j] in ".!?,”\"":
             j += 1
@@ -432,6 +493,7 @@ def _to_claims(candidates: list[_Cand], kinds: list[str]) -> list[Claim]:
             source_mention=c.src.text if c.src else None,
             source_start=c.src.start if c.src else -1,
             source_end=c.src.end if c.src else -1,
+            source_role=c.src.role if c.src else None
         )
         for c, k in zip(candidates, kinds)
     ]
@@ -477,7 +539,7 @@ def main() -> None:
         print(_audit(passages))
     for claims in extract_many(passages):
         for c in claims:
-            print(f"[{c.kind:7}] ({c.source or '-'}) {c.text}")
+            print(f"[{c.kind:7}] ({c.source or '-'}) {c.text}") # type: ignore
         print()
 
 

@@ -296,6 +296,13 @@ SUBJECTS_ALIGNMENTS: dict[str, dict[str, str | list[str]]] = {
         ],
         "political_lean": "right",
     },
+    "Nikki Haley": {
+        "names": [
+            "Nikki Haley",
+            "Haley",
+        ],
+        "political_lean": "right",
+    },
     "Matt Gaetz": {
         "names": [
             "Matt Gaetz",

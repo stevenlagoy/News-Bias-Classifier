@@ -33,7 +33,7 @@ def fastcoref_clusters(text: str, doc) -> list[Cluster]:
         import fastcoref.modeling as fm
         # transformers>=5 expects this attribute; fastcoref never calls post_init() to set it
         if not hasattr(fm.FCorefModel, "all_tied_weights_keys"):
-            fm.FCorefModel.all_tied_weights_keys = {}
+            fm.FCorefModel.all_tied_weights_keys = {} # type: ignore
         from fastcoref import FCoref
         _FCOREF = FCoref(device="cuda:0" if torch.cuda.is_available() else "cpu")
     result = _FCOREF.predict(texts=[text])[0]
@@ -119,28 +119,53 @@ def rule_clusters(text: str, doc) -> list[Cluster]:
 BACKENDS: dict[str, Backend] = {"fastcoref": fastcoref_clusters, "rules": rule_clusters}
 
 
-def _canonical(doc, cluster: Cluster) -> str | None:
-    """Fullest proper name among a cluster's mentions."""
-    names: Counter[str] = Counter()
+def _name_of(doc, span) -> tuple[str, str] | None:
+    """(name, entity label) for a mention, or None when no proper name in span."""
+    ents = [e for e in span.ents if e.label_ in NAME_LABELS]
+    if not ents:
+        ents = [e for e in doc.ents if e.label_ in NAME_LABELS and e.start >= span.start and e.end <= span.end]
+    if not ents:
+        return None
+    ent = max(ents, key=len)
+    s0, e0 = ent.start, ent.end
+    if ent.label_ == "PERSON":
+        # NER often stops early ("Maria Isabel Di"); absorb neighboring plain proper nouns in the mention
+        while e0 < span.end and doc[e0].pos_ == "PROPN" and doc[e0].ent_type_ in {"", "PERSON"}:
+            e0 += 1
+        while s0 > span.start and doc[s0 - 1].pos_ == "PROPN" and doc[s0 - 1].ent_type_ in {"", "PERSON"}:
+            s0 -= 1
+    name = doc[s0:e0].text.removesuffix("’s").removesuffix("'s").strip()
+    return (name, ent.label_) if name else None
+
+def _canonical(doc, cluster: Cluster) -> tuple[str, str] | None:
+    """(fullest name, entity label) for a cluster. The type is decided first (a person cue wins),
+    then the longest name of that type, because model clusters can mix people and organizations."""
+    names: Counter[tuple[str, str]] = Counter()
+    person_cue = False
     for a, b in cluster:
         span = doc.char_span(a, b, alignment_mode="expand")
-        if span is None or (len(span) == 1 and span[0].pos_ == "PRON"):
+        if span is None:
             continue
-        ents = [e for e in span.ents if e.label_ in NAME_LABELS]
-        if not ents:
-            ents = [e for e in doc.ents if e.label_ in NAME_LABELS and e.start >= span.start and e.end <= span.end]
-        if ents:
-            name = max(ents, key=lambda e: len(e.text)).text
-        elif all(t.pos_ == "PROPN" or t.is_punct for t in span):
-            name = span.text
-        else: continue
-        name = name.removesuffix("'s").removesuffix("’s").strip()
-        if name:
-            names[name] += 1
+        if len(span) == 1 and span[0].lower_ in SINGULAR:
+            person_cue = True
+            continue
+        nm = _name_of(doc, span)
+        if nm:
+            names[nm] += 1
     if not names:
         return None
-    return max(names, key=lambda n: (len(n.split()), len(n), names[n]))
-
+    kinds: Counter[str] = Counter()
+    for (_, label), n in names.items():
+        kinds[label] += n
+    if kinds["PERSON"]:
+        kind = "PERSON"
+    elif person_cue:
+        return None # pronoun linked only to non-person names
+    else:
+        kind = kinds.most_common(1)[0][0]
+    pool = {n: c for (n, label), c in names.items() if label == kind}
+    best = max(pool, key=lambda n: (len(n.split()), len(n), pool[n]))
+    return best, kind
 
 def _possessive(name: str) -> str:
     return name + ("’" if name.endswith("s") else "’s")
@@ -156,10 +181,14 @@ def _may_replace_source(span, name: str, kind: str) -> bool:
     # common-noun head ("the US president", "the Louisiana lawmaker"): only role nouns, only for people
     return kind == "PERSON" and span.root.lemma_ in C.TITLES and not (propn & name_words)
 
-def resolve_claims(article: str, claims: list[Claim], backend: str | Backend = "fastcoref", doc=None, rewrite_text: bool = True, plural: bool = False) -> list[Claim]:
+def resolve_claims(
+    article: str, claims: list[Claim], backend: str | Backend = "fastcoref", doc=None,
+    rewrite_text: bool = True, plural: bool = False, clusters: list[Cluster] | None = None
+) -> list[Claim]:
     """Replace pronoun and partial-name sources with full names, for all claims of one article at once."""
     doc = doc if doc is not None else C._nlp(article)
-    clusters = (BACKENDS[backend] if isinstance(backend, str) else backend)(article, doc)
+    if clusters is None:
+        clusters = (BACKENDS[backend] if isinstance(backend, str) else backend)(article, doc)
     canon = [_canonical(doc, cl) for cl in clusters]
     pronouns = SINGULAR | PLURAL if plural else SINGULAR
  
@@ -175,14 +204,14 @@ def resolve_claims(article: str, claims: list[Claim], backend: str | Backend = "
         return best
  
     out: list[Claim] = []
-    canon = [c for c in canon if c is not None]
     for c in claims:
         new = replace(c)
         if c.source_start >= 0:
             ci = find(c.source_start, c.source_end)
+            pair = canon[ci] if ci is not None else None
             span = doc.char_span(c.source_start, c.source_end, alignment_mode="expand")
-            if ci is not None and span is not None and _may_replace_source(span, *canon[ci]):
-                new.source = canon[ci][0]
+            if pair is not None and span is not None and _may_replace_source(span, *pair):
+                new.source = pair[0]
         edits: list[tuple[int, int, str]] = []
         for t in (doc if rewrite_text else []):
             if t.idx < c.start or C._token_end(t) > c.end or t.lower_ not in pronouns:
@@ -190,7 +219,9 @@ def resolve_claims(article: str, claims: list[Claim], backend: str | Backend = "
             ci = find(t.idx, C._token_end(t))
             if ci is None:
                 continue
-            name, kind = canon[ci]
+            pair = canon[ci]
+            if pair is None: continue
+            name, kind = pair
             if t.lower_ in SINGULAR and kind != "PERSON":
                 continue
             earlier = article[c.start : t.idx].lower()
