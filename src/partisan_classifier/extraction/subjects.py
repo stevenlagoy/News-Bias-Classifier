@@ -353,7 +353,7 @@ def analyze_article(
     for c in claims:
         key = None
         if c.source_start >= 0:
-            hit = next((m for m in mentions if m.start < c.source_end and c.source_start < m.end), None)
+            hit = next((m for m in mentions if m.weight > MODIFIER_WEIGHT and m.start < c.source_end and c.source_start < m.end), None)
             key = hit.key if hit else None
         source_key.append(key or (index.key_of(c.source) if c.source else None))
 
