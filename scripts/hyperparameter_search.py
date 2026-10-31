@@ -79,7 +79,8 @@ def main() -> None:
         train_rows = []
         val_rows = []
 
-        for json_file in json_dir.glob("*.json"):
+        # Sort JSON files so every machine selects the same articles.
+        for json_file in sorted(json_dir.glob("*.json")):
             if len(train_rows) >= 30 and len(val_rows) >= 15:
                 break
 
