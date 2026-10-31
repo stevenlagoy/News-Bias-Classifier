@@ -1,0 +1,14 @@
+# Bounded transformer hyperparameter sweep.
+# The test set is never used during tuning.
+
+learning_rates:
+  - 1.0e-5
+  - 2.0e-5
+
+batch_sizes:
+  - 8
+  - 16
+
+epochs:
+  - 2
+  - 3
