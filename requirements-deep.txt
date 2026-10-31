@@ -1,0 +1,6 @@
+# Deep learning / transformers extras.
+# Install with: pip install -r requirements.txt -r requirements-deep.txt
+# Needed for: model.type: transformer in configs, and for politicalBiasBERT baseline comparisons in scripts/evaluate.py.
+torch
+transformers
+datasets
