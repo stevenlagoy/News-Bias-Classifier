@@ -143,6 +143,49 @@ SUBJECTS_ALIGNMENTS: dict[str, dict[str, str | list[str]]] = {
         ],
         "political_lean": "left",
     },
+    "Al Gore": {
+        "names": [
+            "Al Gore",
+            "Albert Gore",
+            "Vice President Al Gore"
+        ],
+        "political_lean": "left"
+    },
+    "Jimmy Carter": {
+        "names": [
+            "Jimmy Carter",
+            "Jimmy Carter Jr.",
+            "James Earl Carter",
+            "James Earl Carter Jr.",
+            "President Jimmy Carter",
+            "President Carter"
+        ],
+        "political_lean": "moderate left"
+    },
+    "Ronald Reagan": {
+        "names": [
+            "Ronald Reagan",
+            "Reagan",
+            "President Ronald Reagan",
+            "President Reagan"
+        ],
+        "political_lean": "right"
+    },
+    "Bill Clinton": {
+        "names": [
+            "Bill Clinton",
+            "William Clinton",
+            "President Bill Clinton",
+            "President Clinton"
+        ],
+        "political_lean": "left"
+    },
+    "Hillary Clinton": {
+        "names": [
+            "Hillary Clinton"
+        ],
+        "political_lean": "left"
+    },
     "Equis Research": {
         "names": [
             "Equis Research",

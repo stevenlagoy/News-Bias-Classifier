@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import spacy
 from collections import Counter
 import argparse
+import os
 import warnings
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -359,7 +360,7 @@ def _find_attribution(sent, qr, in_quote):
         if in_quote(tok) or not _is_speech(tok): continue
         subj = _subject(tok, in_quote)
         src = _name_span(subj) if subj is not None else _window_source(tok, sent, in_quote)
-        if src is None: continue
+        if src is None or src.text.strip().lower() in {"i", "we"}: continue # Article's own voice, not a source
         got = _contents(tok, subj, src, sent, qr)
         if got is None: continue
         residual = []
@@ -472,6 +473,23 @@ def _candidates(doc) -> list[_Cand]:
     return candidates
 
 
+def _device() -> int:
+    requested = os.getenv("PARTISAN_DEVICE", "auto").strip().lower()
+    if requested == "cpu":
+        return -1
+    if requested == "cuda":
+        try:
+            import torch
+            return 0 if torch.cuda.is_available() else -1
+        except Exception:
+            return -1
+    try:
+        import torch
+        return 0 if torch.cuda.is_available() else -1
+    except Exception:
+        return -1
+    
+
 def _classify(texts: list[str]) -> list[str]:
     global _classifier
     if _classifier is None:
@@ -480,6 +498,7 @@ def _classify(texts: list[str]) -> list[str]:
             "text-classification",
             model="GroNLP/mdebertav3-subjectivity-multilingual",
             truncation=True,
+            device=_device(),
         )
     preds = _classifier(texts, batch_size=32)
     return ["fact" if LABELS[p["label"]] == "OBJ" else "opinion" for p in preds]

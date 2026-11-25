@@ -10,11 +10,13 @@ from . import claims as C
 from . import coref as R
 from .subjects_politics import SUBJECTS_ALIGNMENTS
 from .claims import Claim
+from .lean_resolver import LEAN_SCORE, LeanRecord, LeanResolver, build_resolver, lean_to_score
 
 
 SUBJ_DEPS = {"nsubj", "nsubjpass"}
 MODIFIER_DEPS = {"amod", "compound", "nmod"}
 NAME_LABELS = {"PERSON", "ORG", "NORP"}
+IGNORE_NAMES = {"i", "we", "you", "americans", "times", "court"}   # never subjects; extend as you find more
 MODIFIER_WEIGHT = 0.25  # a name used as a modifier doesn't say much about the subject
 PRONOUN_WEIGHT = 0.5
 LEAD_SENTENCES = 2      # mentions in the first few sentences are more impactful
@@ -25,6 +27,7 @@ REL_PRIMARY = 0.3       # relative to the top-scoring subject
 STANCE_BAND = 0.2       # |score| above this counts as positive / negative, |score| less than this is neutral
 OPINION_WEIGHT = 1.0    # opinon claims weigh this much for stance
 FACT_WEIGHT = 0.5       # factual claims weigh this much for stance
+RESOLVE_TOP_K = 10      # look up leans for this many subjects, plus every claim source
 
 StanceFn = Callable[[list[tuple[str, str]]], list[float]] # [(text, target)] -> scores in [-1, 1]
 
@@ -48,6 +51,13 @@ class AliasIndex:
     """Fact, case- and title-insensitive lookup over subject table."""
 
     def __init__(self, table: dict):
+        bad = sorted({
+            str(e["political_lean"])
+            for e in table.values()
+            if e.get("political_lean") and lean_to_score(str(e["political_lean"])) is None
+        })
+        if bad:
+            raise ValueError(f"political_lean labels with no numeric score: {bad}. Known labels: {sorted(LEAN_SCORE)}")
         self.table = table
         self._norm_to_key: dict[str, str] = {}
         raw: set[str] = set()
@@ -99,6 +109,9 @@ class Subject:
     speaker_claims: int
     score: float
     primary: bool = False
+    lean_score: float | None = None # -1 .. +1
+    lean_confidence: float = 0.0
+    lean_method: str | None = None # table | article-cue | voteview | wikidata | llm
     stance_voice: ChannelStance | None = None   # article's own voice
     stance_quoted: ChannelStance | None = None  # what quoted sources say about the subject
     stance_by_source_lean: dict[str, ChannelStance] = field(default_factory=dict)
@@ -139,6 +152,12 @@ def _looks_like_name(text: str) -> bool:
     return 1 <= len(tokens) <= 4 and all(t[:1].isupper() and not any(ch.isdigit() for ch in t) for t in tokens)
 
 
+def _looks_like_name_use(span, text: str) -> bool:
+    if len(span) > 1 or text.isupper():
+        return True
+    return text[:1].isupper() and (span.root.pos_ == "PROPN" or bool(span.root.ent_type))
+
+
 def find_mentions(
     doc, index: AliasIndex, clusters: list[R.Cluster] | None = None,
     claims: list[Claim] | None = None
@@ -161,11 +180,13 @@ def find_mentions(
         for m in index.regex.finditer(doc.text):
             span = doc.char_span(m.start(), m.end(), alignment_mode="expand")
             key = index.key_of(m.group())
-            if span is not None and key is not None:
+            if span is not None and key is not None and _looks_like_name_use(span, m.group()):
                 add(m.start(), m.end(), key, "alias", _weight(span), span, any(t.ent_type_ == "PERSON" for t in span))
 
     # Other named people, groups, institutions from NER
-    people = [e for e in doc.ents if e.label_ == "PERSON" and free(e.start_char, e.end_char)]
+    def junk(text: str) -> bool:
+        return len(text.strip(". ")) <= 2 or _norm(text) in IGNORE_NAMES
+    people = [e for e in doc.ents if e.label_ == "PERSON" and free(e.start_char, e.end_char) and not junk(e.text)]
     fullest: dict[str, str] = {}
     for e in people:
         last = e[-1].lower_
@@ -178,7 +199,7 @@ def find_mentions(
             add(t.idx, C._token_end(t), index.key_of(fullest[t.lower_]) or fullest[t.lower_], "ner", _weight(doc[t.i : t.i + 1]), doc[t.i : t.i + 1], True)
     orgs: dict[str, str] = {}
     for e in doc.ents:
-        if e.label_ in {"ORG", "NORP"} and free(e.start_char, e.end_char):
+        if e.label_ in {"ORG", "NORP"} and free(e.start_char, e.end_char) and not junk(e.text):
             w = _weight(e)
             if e.label_ == "NORP" and w < 1.0: continue # Adjective, not a group mention
             display = index.key_of(e.text) or orgs.setdefault(_norm(e.text), re.sub(r"^[Tt]he\s+", "", e.text))
@@ -232,7 +253,7 @@ def absa_stance(pairs: list[tuple[str, str]]) -> list[float]:
     if not pairs: return []
     if _ABSA is None:
         from transformers import pipeline
-        _ABSA = pipeline("text-classification", model="yangheng/deberta-v3-base-absa-v1.1", top_k=None, truncation=True)
+        _ABSA = pipeline("text-classification", model="yangheng/deberta-v3-base-absa-v1.1", top_k=None, truncation=True, device=C._device())
     outs = _ABSA([{"text": t, "text_pair": a} for t, a in pairs], batch_size=16)
     scores = []
     for o in outs:
@@ -341,9 +362,28 @@ def person_roles(doc, mentions: list[Mention]) -> dict[str, str]:
     return {k: "; ".join(v[:3]) for k, v in roles.items()}
 
 
+def analysis_from_dict(d: dict) -> ArticleAnalysis:
+    """Inverse of ArticleAnalysis.to_dict(), for analyses that were cached as JSON."""
+    subjects = []
+    for sd in d["subjects"]:
+        sd = dict(sd)
+        for k in ("stance_voice", "stance_quoted"):
+            sd[k] = ChannelStance(**sd[k]) if sd.get(k) else None
+        sd["stance_by_source_lean"] = {k: ChannelStance(**v) for k, v in (sd.get("stance_by_source_lean") or {}).items()}
+        subjects.append(Subject(**sd))
+    claims = []
+    for cd in d["claims"]:
+        cd = dict(cd)
+        cd["claim"] = Claim(**cd["claim"])
+        cd["targets"] = [tuple(t) for t in cd.get("targets", [])]
+        claims.append(ClaimInfo(**cd))
+    return ArticleAnalysis(subjects, claims)
+
+
 def analyze_article(
     article: str, claims: list[Claim], doc, clusters: list[R.Cluster] | None = None,
-    index: AliasIndex | None = None, stance_fn: StanceFn | None = absa_stance
+    index: AliasIndex | None = None, stance_fn: StanceFn | None = absa_stance,
+    resolver: LeanResolver | None = None, as_of_year: int | None = None,
 ) -> ArticleAnalysis:
     index = index or AliasIndex(SUBJECTS_ALIGNMENTS)
     mentions = find_mentions(doc, index, clusters, claims)
@@ -378,13 +418,32 @@ def analyze_article(
         floor = max(MIN_PRIMARY, REL_PRIMARY * ranked[0].score)
         for s in ranked[:TOP_K]:
             s.primary = s.score >= floor
-    # Claim typing
+    # leans: the table first, then (if a resolver is given) article cues, VoteView, Wikidata
     roles = person_roles(doc, mentions)
+    leans: dict[str, LeanRecord] = {}
+    claim_counts = Counter(k for k in source_key if k)
+    primary_keys = {s.key for s in ranked if s.primary}
+    for key in {s.key for s in ranked[:RESOLVE_TOP_K]} | {k for k in source_key if k}:
+        table_lean = index.lean(key)
+        if table_lean:
+            leans[key] = LeanRecord(key, table_lean, lean_to_score(table_lean), 1.0, "table")
+        elif resolver is not None:
+            known = subjects.get(key)
+            leans[key] = resolver.resolve(key, is_person=True if (known and known.is_person) else None, context=roles.get(key, ""), as_of_year=as_of_year, online=key in primary_keys or claim_counts[key] >= 2)
+    for s in ranked:
+        rec = leans.get(s.key)
+        if rec is not None and rec.lean:
+            s.political_lean, s.lean_score = rec.lean, rec.score
+            s.lean_confidence, s.lean_method = rec.confidence, rec.method
+
+    # Claim typing
     infos: list[ClaimInfo] = []
     for c, sk in zip(claims, source_key):
         extra = roles.get(sk, "") if sk else ""
         speaker = classify_speaker(c, sk in index.table if sk else False, extra)
         lean, basis = source_lean(c, sk, index, extra)
+        if lean is None and sk in leans and leans[sk].lean:
+            lean, basis = leans[sk].lean, leans[sk].method
         infos.append(ClaimInfo(c, speaker, classify_claim(c, speaker), bool(_FIRST_PERSON.search(c.text)), sk, lean, basis))
 
     # Stance: one (claim text, target) job per subject mentioned in a claim
@@ -426,16 +485,17 @@ def analyze_article(
 
 def analyze_articles(
     texts: list[str], backend: str | R.Backend = "fastcoref",
-    stance_fn: StanceFn | None = absa_stance, table: dict | None = None
+    stance_fn: StanceFn | None = absa_stance, table: dict | None = None,
+    resolver: LeanResolver | None = None, as_of_years: list[int | None] | None = None
 ) -> list[ArticleAnalysis]:
     """Full pipeline for many articles: claims, one coreference pass, subjects, stance, claim typing."""
     index = AliasIndex(table if table is not None else SUBJECTS_ALIGNMENTS)
     per_article, docs = C.extract_many(texts, return_docs=True)
     out = []
-    for text, claims, doc in zip(texts, per_article, docs):
+    for i, (text, claims, doc) in enumerate(zip(texts, per_article, docs)):
         clusters = (R.BACKENDS[backend] if isinstance(backend, str) else backend)(text, doc)
         claims = R.resolve_claims(text, claims, backend, doc=doc, clusters=clusters)
-        out.append(analyze_article(text, claims, doc, clusters, index, stance_fn))
+        out.append(analyze_article(text, claims, doc, clusters, index, stance_fn, resolver, as_of_years[i] if as_of_years else None))
     return out
 
 
@@ -456,14 +516,17 @@ def main() -> None:
     ap.add_argument("path", help="UTF-8 text file; the whole file is treated as one article")
     ap.add_argument("--backend", choices=sorted(R.BACKENDS), default="fastcoref")
     ap.add_argument("--no-stance", action="store_true", help="skip the stance model")
+    ap.add_argument("--voteview", help="path to Voteview's HSall_members.csv")
+    ap.add_argument("--online", action="store_true", help="look unknown subjects up on Wikidata")
+    ap.add_argument("--lean-cache", default="data/lean_cache.jsonl", help="where resolved leans are cached")
     args = ap.parse_args()
     with open(args.path, encoding="utf-8") as f:
         article = " ".join(ln.strip() for ln in f if ln.strip())
-    result = analyze_articles([article], args.backend, None if args.no_stance else absa_stance)[0]
- 
+    resolver = build_resolver(args.voteview, args.online, args.lean_cache) if (args.voteview or args.online) else None
+    result = analyze_articles([article], args.backend, None if args.no_stance else absa_stance, resolver=resolver)[0] 
     print("PRIMARY SUBJECTS")
     for s in result.primary():
-        print(f"  {s.key:28} lean={s.political_lean or '?':6} score={s.score:5.1f}  "
+        print(f"  {s.key:28} lean={s.political_lean or '?':14} ({s.lean_method or '-'}) score={s.score:5.1f}  "
               f"voice: {_fmt(s.stance_voice)}  quoted: {_fmt(s.stance_quoted)}")
         for lean, ch in s.stance_by_source_lean.items():
             print(f"      said by {lean:8} {_fmt(ch)}")

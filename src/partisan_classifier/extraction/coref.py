@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import warnings
 from collections import Counter, defaultdict
 from dataclasses import replace
@@ -35,7 +36,9 @@ def fastcoref_clusters(text: str, doc) -> list[Cluster]:
         if not hasattr(fm.FCorefModel, "all_tied_weights_keys"):
             fm.FCorefModel.all_tied_weights_keys = {} # type: ignore
         from fastcoref import FCoref
-        _FCOREF = FCoref(device="cuda:0" if torch.cuda.is_available() else "cpu")
+        requested = os.getenv("PARTISAN_DEVICE", "auto").strip().lower()
+        use_cuda = requested == "cuda" or (requested == "auto" and torch.cuda.is_available())
+        _FCOREF = FCoref(device="cuda:0" if use_cuda else "cpu")
     result = _FCOREF.predict(texts=[text])[0]
     return [[(a, b) for a, b in cl] for cl in result.get_clusters(as_strings=False)]
 
