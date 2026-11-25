@@ -1,9 +1,15 @@
-"""Train a classifier on article features and show which feature groups carry information.
+"""Evaluate structured article features, including feature-group and ablation experiments.
 
-  python scripts/train_features.py data/articles/features.jsonl
+Example:
+    python scripts/train_features.py data/articles/features_v5.jsonl
 
-Rows need "label" and "split" ("train" / "test", optionally "valid"). With no split values it falls back to
-a publisher-disjoint 80/20 split. Everything is scored with macro-F1, the same metric as the text baselines.
+Expected rows contain id, label, publisher, split ("train", "valid", "test"),
+and a numeric "features" object. If no train/test split is present, a
+publisher-disjoint 80/20 split is created.
+
+All model selection uses training data only. Validation and test sets are never
+used to fit scalers or select hyperparameters. Publisher-cluster bootstrap
+intervals are reported for held-out metrics.
 """
 from __future__ import annotations
 
@@ -12,111 +18,236 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))   # run from anywhere without installing
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
-from sklearn.model_selection import GroupShuffleSplit
+from sklearn.metrics import accuracy_score, f1_score
+from sklearn.model_selection import GroupKFold, GridSearchCV, GroupShuffleSplit
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.class_weight import compute_sample_weight
 
 from partisan_classifier.extraction.features import FEATURE_NAMES, load_features
 
-N = FEATURE_NAMES
+
 GROUPS = {
-    "presentation": [f for f in N if f.startswith(("voice_", "quoted_slant", "quoted_stance", "lean_mean"))],
-    "sources": [f for f in N if f.startswith(("quoted_lean", "quoted_left", "quoted_right", "src_", "n_src_"))],
-    "claims": [f for f in N if f in {"n_claims", "log_n_claims", "attributed_share", "first_person_share"}
-               or f.startswith(("opinion_", "personal_", "expert_", "speaker_"))],
+    "presentation": [
+        f for f in FEATURE_NAMES
+        if f.startswith(("voice_", "quoted_slant", "quoted_stance", "lean_mean"))
+    ],
+    "sources": [
+        f for f in FEATURE_NAMES
+        if f.startswith(("quoted_lean", "quoted_left", "quoted_right", "src_", "n_src_"))
+    ],
+    "claims": [
+        f for f in FEATURE_NAMES
+        if f in {
+            "n_claims", "log_n_claims", "attributed_share", "first_person_share",
+            "opinion_share_voice", "opinion_share_attr", "personal_opinion_share",
+            "expert_opinion_share",
+        }
+        or f.startswith(("speaker_", "opinion_", "personal_", "expert_"))
+    ],
     "coverage": ["n_primary", "n_primary_lean", "lean_coverage"],
 }
+C_GRID = [0.001, 0.01, 0.1, 1.0, 10.0]
 
 
-def logreg():
-    return make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000, class_weight="balanced"))
+def publisher_groups(meta: list[dict]) -> np.ndarray:
+    return np.array([
+        str(m.get("publisher") or "unknown").strip().casefold()
+        for m in meta
+    ])
 
 
-def macro_f1_ci(y, pred, rng, n=300):
-    scores = []
-    for _ in range(n):
-        i = rng.integers(0, len(y), len(y))
-        scores.append(f1_score(y[i], pred[i], average="macro"))
-    return np.percentile(scores, [2.5, 97.5])
+def logistic():
+    return make_pipeline(
+        StandardScaler(),
+        LogisticRegression(max_iter=3000, class_weight="balanced"),
+    )
+
+
+def grouped_cv(groups: np.ndarray):
+    n = len(np.unique(groups))
+    if n < 2:
+        raise ValueError("At least two distinct publishers are required in the training split.")
+    return list(GroupKFold(n_splits=min(5, n)).split(np.zeros(len(groups)), groups, groups))
+
+
+def fit_logistic(Xtr, ytr, gtr):
+    cv = grouped_cv(gtr)
+    search = GridSearchCV(
+        logistic(),
+        {"logisticregression__C": C_GRID},
+        scoring="f1_macro",
+        cv=cv,
+        n_jobs=-1,
+        refit=True,
+    )
+    search.fit(Xtr, ytr)
+    return search
+
+
+def cluster_bootstrap_ci(y, pred, groups, rng, n_boot=1000):
+    """Cluster bootstrap of macro-F1 and accuracy, resampling publishers."""
+    members = {g: np.flatnonzero(groups == g) for g in np.unique(groups)}
+    keys = np.array(list(members), dtype=object)
+    f1s, accs = [], []
+    for _ in range(n_boot):
+        sampled = rng.choice(keys, size=len(keys), replace=True)
+        idx = np.concatenate([members[g] for g in sampled])
+        f1s.append(f1_score(y[idx], pred[idx], average="macro", zero_division=0))
+        accs.append(accuracy_score(y[idx], pred[idx]))
+    return (
+        np.percentile(f1s, [2.5, 97.5]),
+        np.percentile(accs, [2.5, 97.5]),
+    )
+
+
+def metrics(y, pred):
+    return f1_score(y, pred, average="macro", zero_division=0), accuracy_score(y, pred)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("features")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--bootstrap", type=int, default=1000)
+    ap.add_argument("--no-individual-ablation", action="store_true",
+                    help="skip the one-feature-at-a-time ablation table")
     args = ap.parse_args()
 
+    rng = np.random.default_rng(args.seed)
     ids, X, meta = load_features(args.features)
     y = np.array([m["label"] for m in meta])
-    split = np.array([m.get("split") or "" for m in meta])
-    pub = np.array([m.get("publisher") or "" for m in meta])
-    if not (split == "train").any():
-        tr, te = next(GroupShuffleSplit(test_size=0.2, random_state=args.seed).split(X, y, pub))
-        split = np.array(["train"] * len(y), dtype=object)
+    split = np.array([str(m.get("split") or "").strip().lower() for m in meta])
+    pub = publisher_groups(meta)
+
+    if not np.any(split == "train") or not np.any(np.isin(split, ["valid", "test"])):
+        tr, te = next(GroupShuffleSplit(
+            n_splits=1, test_size=0.2, random_state=args.seed
+        ).split(X, y, groups=pub))
+        split = np.full(len(y), "train", dtype=object)
         split[te] = "test"
-        print("no split field: using a publisher-disjoint 80/20 split", file=sys.stderr)
-    rng = np.random.default_rng(args.seed)
-    col = {f: i for i, f in enumerate(N)}
-    masks = {s: split == s for s in ("train", "valid", "test") if (split == s).any()}
+        print("No usable train/valid/test split found: using publisher-disjoint 80/20 train/test.")
 
-    print("articles per split/label:", {s: dict(Counter(map(str, y[m]))) for s, m in masks.items()})
-    cov = X[:, col["lean_coverage"]]
-    print(f"lean coverage: mean {cov.mean():.2f}; {np.mean(X[:, col['n_primary_lean']] == 0):.0%} of articles have "
-          f"no primary subject with a known lean; {np.mean(X[:, col['quoted_lean_known_share']] == 0):.0%} have no "
-          f"quoted source with a known lean\n")
+    masks = {s: split == s for s in ("train", "valid", "test") if np.any(split == s)}
+    if "train" not in masks:
+        raise ValueError("Feature file has no rows with split='train'.")
 
-    def run(model, cols, weighted=False):
-        idx = [col[f] for f in cols]
-        Xtr, ytr = X[masks["train"]][:, idx], y[masks["train"]]
-        if weighted:   # estimators without class_weight get balanced sample weights instead
-            model.fit(Xtr, ytr, sample_weight=compute_sample_weight("balanced", ytr))
-        else:
-            model.fit(Xtr, ytr)
-        return {s: model.predict(X[m][:, idx]) for s, m in masks.items() if s != "train"}
+    train_idx = np.flatnonzero(masks["train"])
+    ytr, gtr = y[train_idx], pub[train_idx]
+    print(f"Rows: {len(y)}; publishers: {len(np.unique(pub))}")
+    print("Split sizes:", {s: int(m.sum()) for s, m in masks.items()})
+    print("Training labels:", dict(Counter(map(str, ytr))))
+    print("Training publishers:", len(np.unique(gtr)))
 
-    rows = []
-    def record(name, preds):
-        rows.append((name, {s: f1_score(y[masks[s]], p, average="macro") for s, p in preds.items()}))
+    feature_index = {name: i for i, name in enumerate(FEATURE_NAMES)}
+    used = set()
+    for name, cols in GROUPS.items():
+        missing = [c for c in cols if c not in feature_index]
+        if missing:
+            raise ValueError(f"Unknown columns in group {name}: {missing}")
+        overlap = used.intersection(cols)
+        if overlap:
+            raise ValueError(f"Features assigned to multiple groups: {sorted(overlap)}")
+        used.update(cols)
+    unassigned = [f for f in FEATURE_NAMES if f not in used]
+    if unassigned:
+        print("Features not assigned to a named group (still included in 'all'):", ", ".join(unassigned))
 
-    record("majority class", run(DummyClassifier(strategy="most_frequent"), N))
-    for g, cols in GROUPS.items():
-        record(f"{g} only", run(logreg(), cols))
-    for g in GROUPS:
-        record(f"all minus {g}", run(logreg(), [f for f in N if f not in GROUPS[g]]))
-    full = run(logreg(), N)
-    record("all features, logistic", full)
-    record("all features, gradient boosting", run(HistGradientBoostingClassifier(random_state=args.seed), N, weighted=True))
+    # Each experiment selects C using publisher-grouped CV on train only.
+    experiments: list[tuple[str, list[int]]] = [
+        ("all features", list(range(X.shape[1]))),
+    ]
+    for group, cols in GROUPS.items():
+        experiments.append((f"{group} only", [feature_index[c] for c in cols]))
+    for group, cols in GROUPS.items():
+        excluded = set(cols)
+        experiments.append((
+            f"all minus {group}",
+            [i for i, name in enumerate(FEATURE_NAMES) if name not in excluded],
+        ))
 
-    splits = [s for s in ("valid", "test") if s in masks]
-    print(f"{'macro-F1':36}" + "".join(f"{s:>9}" for s in splits))
-    for name, sc in rows:
-        print(f"{name:36}" + "".join(f"{sc.get(s, float('nan')):9.3f}" for s in splits))
+    results = {}
+    print("\nFeature-group experiments (each logistic model tunes C using grouped CV):")
+    print(f"{'model':28s}" + "".join(f"{s:>22s}" for s in masks if s != "train"))
+    for name, cols in experiments:
+        if not cols:
+            continue
+        model = fit_logistic(X[train_idx][:, cols], ytr, gtr)
+        results[name] = model
+        row = f"{name:28s}"
+        for s, mask in masks.items():
+            if s == "train":
+                continue
+            pred = model.predict(X[mask][:, cols])
+            f1, acc = metrics(y[mask], pred)
+            row += f"{f1:.3f}/{acc:.3f}".rjust(22)
+        print(row + f"   C={model.best_params_['logisticregression__C']}")
 
-    if "test" in masks:
-        yt, pt = y[masks["test"]], full["test"]
-        lo, hi = macro_f1_ci(yt, pt, rng)
-        print(f"\nall features, logistic, test: macro-F1 {f1_score(yt, pt, average='macro'):.3f} "
-              f"(95% bootstrap CI {lo:.3f} to {hi:.3f}), accuracy {accuracy_score(yt, pt):.3f}")
-        print(classification_report(yt, pt, zero_division=0))
-        labels = sorted(set(map(str, y)))
-        print("confusion (rows = true, columns = predicted, order", labels, ")")
-        print(confusion_matrix(yt, pt, labels=labels))
+    # A simple non-linear comparison, with balanced sample weights.
+    hgb = HistGradientBoostingClassifier(
+        max_iter=150, learning_rate=0.08, max_leaf_nodes=15,
+        l2_regularization=1.0, random_state=args.seed,
+    )
+    hgb.fit(
+        X[train_idx], ytr,
+        sample_weight=compute_sample_weight("balanced", ytr),
+    )
+    print("\nAll features, gradient boosting:")
+    for s, mask in masks.items():
+        if s == "train":
+            continue
+        pred = hgb.predict(X[mask])
+        f1, acc = metrics(y[mask], pred)
+        print(f"  {s:5s}: macro-F1={f1:.3f}, accuracy={acc:.3f}")
 
-    model = logreg()
-    model.fit(X[masks["train"]], y[masks["train"]])
-    clf = model.named_steps["logisticregression"]
-    print("\nlargest coefficients per class (standardized features):")
-    for k, label in enumerate(clf.classes_):
-        top = np.argsort(-np.abs(clf.coef_[k]))[:6]
-        print(f"  {label:7}", ", ".join(f"{N[i]} {clf.coef_[k][i]:+.2f}" for i in top))
+    # Bootstrap intervals for held-out all-feature model.
+    full = results["all features"]
+    for s in ("valid", "test"):
+        if s not in masks:
+            continue
+        mask = masks[s]
+        pred = full.predict(X[mask])
+        f1, acc = metrics(y[mask], pred)
+        f1_ci, acc_ci = cluster_bootstrap_ci(
+            y[mask], pred, pub[mask], rng, args.bootstrap
+        )
+        print(
+            f"\nAll features, {s}: macro-F1={f1:.3f} "
+            f"(publisher-bootstrap 95% CI {f1_ci[0]:.3f} to {f1_ci[1]:.3f}); "
+            f"accuracy={acc:.3f} "
+            f"(95% CI {acc_ci[0]:.3f} to {acc_ci[1]:.3f})"
+        )
+
+    # Individual leave-one-feature-out ablation. Fix C at the all-feature
+    # training-CV choice so the comparison isolates feature removal.
+    if not args.no_individual_ablation:
+        best_c = full.best_params_["logisticregression__C"]
+        print(f"\nIndividual feature ablation (fixed C={best_c}; change is ablated minus full):")
+        print(f"{'removed feature':34s}" + "".join(f"{s:>22s}" for s in masks if s != "train"))
+        for j, feature in enumerate(FEATURE_NAMES):
+            cols = [i for i in range(X.shape[1]) if i != j]
+            model = logistic().set_params(logisticregression__C=best_c)
+            model.fit(X[train_idx][:, cols], ytr)
+            row = f"{feature:34s}"
+            for s, mask in masks.items():
+                if s == "train":
+                    continue
+                pred_full = full.predict(X[mask])
+                pred_ablated = model.predict(X[mask][:, cols])
+                f1_full, acc_full = metrics(y[mask], pred_full)
+                f1_ab, acc_ab = metrics(y[mask], pred_ablated)
+                row += f"{(f1_ab-f1_full):+.3f}/{(acc_ab-acc_full):+.3f}".rjust(22)
+            print(row)
+
+    print("\nInterpretation: positive ablation deltas mean removing that feature improved the score;")
+    print("negative deltas mean the feature helped. Treat small differences as noise, especially")
+    print("when the held-out set contains relatively few independent publishers.")
 
 
 if __name__ == "__main__":
